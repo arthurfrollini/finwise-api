@@ -130,6 +130,126 @@ groups:
             {{ with $values.A }}Current 5xx ratio: {{ humanizePercentage .Value }}. {{ end }}The
             error logs are in Loki under app="finwise-api".
 
+  # p95 latency from the histograms the OTel auto-instrumentation records.
+  # Each rule needs some traffic first, so one slow request on a quiet night
+  # doesn't page anyone.
+  - orgId: 1
+    name: finwise-latency
+    folder: finwise
+    interval: 30s
+    rules:
+      - uid: finwise-http-slow
+        title: Slow endpoint
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              # /education/questions waits on the model and has its own rule;
+              # /health is slow only when a dependency is, which has its own.
+              expr: >-
+                histogram_quantile(0.95, sum by (le, http_route) (
+                  rate(http_server_request_duration_bucket{job="finwise-api",http_route!="",http_route!~"/education/questions|/health"}[5m])
+                ))
+                and on(http_route) sum by (http_route) (
+                  increase(http_server_request_duration_count{job="finwise-api"}[5m])
+                ) >= 10
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [2] }
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.http_route }} is slow: p95 above 2s for 5 minutes'
+          description: >-
+            {{ with $values.A }}p95 is {{ printf "%.2f" .Value }}s. {{ end }}Jaeger
+            shows where the time goes in a slow trace of this route.
+
+      - uid: finwise-rag-slow
+        title: Slow AI answers
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: >-
+                histogram_quantile(0.95, sum by (le) (
+                  rate(http_server_request_duration_bucket{job="finwise-api",http_route="/education/questions"}[5m])
+                ))
+                and on() sum(
+                  increase(http_server_request_duration_count{job="finwise-api",http_route="/education/questions"}[5m])
+                ) >= 3
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [15] }
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'RAG answers are slow: p95 above 15s for 5 minutes'
+          description: >-
+            {{ with $values.A }}p95 is {{ printf "%.1f" .Value }}s. {{ end }}The
+            model call dominates this route, so check the Anthropic status page
+            and the "finwise · LLM" dashboard first.
+
+      - uid: finwise-db-slow
+        title: Slow database queries
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: >-
+                histogram_quantile(0.95, sum by (le) (
+                  rate(db_client_operation_duration_bucket{job="finwise-api"}[5m])
+                ))
+                and on() sum(
+                  increase(db_client_operation_duration_count{job="finwise-api"}[5m])
+                ) >= 20
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0.5] }
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Database queries are slow: p95 above 500ms for 5 minutes'
+          description: >-
+            {{ with $values.A }}p95 is {{ printf "%.0f" (mul .Value 1000) }}ms. {{ end }}A
+            dead database fires "Dependency down" instead; this one catches it
+            degrading first (locks, a missing index, a full disk).
+
   - orgId: 1
     name: finwise-ai
     folder: finwise

@@ -17,7 +17,7 @@ REST API for a personal finance app. Users track bank accounts and transactions 
 - **Storage:** AWS S3 (avatar upload via presigned URL)
 - **Billing:** Stripe (subscriptions, webhooks, dunning)
 - **Security:** IP rate limiting (`@nestjs/throttler`), per-plan AI quotas, a global daily AI spend ceiling
-- **Observability:** OpenTelemetry traces and metrics to Jaeger and Prometheus, structured logs (`nestjs-pino`) to Loki, all in Grafana, including an LLM spend dashboard. A `/health` check and Grafana alert rules email whoever is on call when Postgres or Redis stops answering, the API goes down, 5xx errors climb, or AI calls fail or overspend.
+- **Observability:** OpenTelemetry traces and metrics to Jaeger and Prometheus, structured logs (`nestjs-pino`) to Loki, all in Grafana, including an LLM spend dashboard. A `/health` check and Grafana alert rules email whoever is on call when Postgres or Redis stops answering, the API goes down, 5xx errors climb, an endpoint or the database gets slow, or AI calls fail or overspend.
 - **Tests:** Jest 30 + Supertest. 480 unit tests (including the eval harness) and 97 e2e tests, 95.7% combined statement coverage. Mocks are typed (`jest-mock-extended`), so a fixture that drifts from the real type fails to compile.
 - **Type safety:** TypeScript `strict` plus `noUncheckedIndexedAccess` (an array or record lookup may be `undefined` until checked), with no `any`, no type assertions (`as const` aside) and no non-null `!` anywhere, tests included. ESLint enforces all three. Untrusted input (env vars, job payloads, JSON files, HTTP response bodies in e2e) is parsed with zod.
 
@@ -159,7 +159,7 @@ The app runs with just `db` and `redis` up; the rest is optional.
 | Grafana | http://localhost:3001 (`admin` / `admin`) | Traces, metrics and logs in one place; datasources are provisioned automatically |
 | Health check | http://localhost:3000/health | 200 or 503 with Postgres and Redis state; public, meant for an external uptime monitor |
 | Grafana LLM dashboard | http://localhost:3001/d/finwise-llm | Claude API spend, tokens and outcomes per feature, provisioned from `docker/grafana/provisioning/dashboards/`. The counters belong to the API process and reset when it restarts. |
-| Grafana alerts | http://localhost:3001/alerting/list | Five rules provisioned from `docker/grafana/provisioning/alerting/`, emailed to `ALERT_EMAIL` through Resend's SMTP relay. A stopped Postgres reaches the inbox in about a minute, and a resolved email follows. Leave `ALERT_EMAIL` empty in dev, or "API unreachable" fires whenever the API is off. |
+| Grafana alerts | http://localhost:3001/alerting/list | Eight rules provisioned from `docker/grafana/provisioning/alerting/`: a dead dependency, an unreachable API, 5xx rate, slow endpoints (p95 over 2s), slow RAG answers (p95 over 15s), slow database queries (p95 over 500ms), and AI failures and spend. Emailed to `ALERT_EMAIL` through Resend's SMTP relay; a stopped Postgres reaches the inbox in about a minute, and a resolved email follows. Leave `ALERT_EMAIL` unset in dev, or "API unreachable" fires whenever the API is off. |
 
 ```bash
 # Start only the observability stack (Jaeger, Prometheus, Loki, Grafana)
@@ -231,7 +231,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=  # default http://localhost:4318/v1/traces (Jaeger)
 LOKI_URL=                     # default http://localhost:3100
 
 # Optional, read by docker compose for the grafana service (not by the API)
-ALERT_EMAIL=               # who gets alert emails; empty keeps alerts quiet
+ALERT_EMAIL=               # who gets alert emails; unset keeps alerts quiet (rules still run)
 ALERT_FROM_EMAIL=          # sender Resend accepts, default onboarding@resend.dev
 ```
 

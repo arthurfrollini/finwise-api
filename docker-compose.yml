@@ -90,6 +90,9 @@ services:
       - '3001:3000'
     # Alert emails go out through Resend's SMTP relay with the API's own
     # Resend key; ALERT_EMAIL is read by provisioning/alerting/alerting.yml.
+    # Grafana refuses to load a contact point with no address, so an unset
+    # ALERT_EMAIL falls back to a reserved .invalid domain that never
+    # receives anything: rules still evaluate, nobody gets an email.
     environment:
       GF_SMTP_ENABLED: 'true'
       GF_SMTP_HOST: smtp.resend.com:587
@@ -97,7 +100,7 @@ services:
       GF_SMTP_PASSWORD: ${RESEND_API_KEY:-}
       GF_SMTP_FROM_ADDRESS: ${ALERT_FROM_EMAIL:-onboarding@resend.dev}
       GF_SMTP_FROM_NAME: finwise alerts
-      ALERT_EMAIL: ${ALERT_EMAIL:-}
+      ALERT_EMAIL: ${ALERT_EMAIL:-alerts-off@finwise.invalid}
 
 volumes:
   postgres_data:
