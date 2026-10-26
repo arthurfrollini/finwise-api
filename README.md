@@ -17,8 +17,8 @@ REST API for a personal finance app. Users track bank accounts and transactions 
 - **Storage:** AWS S3 (avatar upload via presigned URL)
 - **Billing:** Stripe (subscriptions, webhooks, dunning)
 - **Security:** IP rate limiting (`@nestjs/throttler`), per-plan AI quotas, a global daily AI spend ceiling
-- **Observability:** OpenTelemetry traces and metrics to Jaeger and Prometheus, structured logs (`nestjs-pino`) to Loki, all in Grafana, including an LLM spend dashboard
-- **Tests:** Jest 30 + Supertest. 470 unit tests (including the eval harness) and 95 e2e tests, 95.6% combined statement coverage. Mocks are typed (`jest-mock-extended`), so a fixture that drifts from the real type fails to compile.
+- **Observability:** OpenTelemetry traces and metrics to Jaeger and Prometheus, structured logs (`nestjs-pino`) to Loki, all in Grafana, including an LLM spend dashboard. A `/health` check and Grafana alert rules email whoever is on call when Postgres or Redis stops answering, the API goes down, 5xx errors climb, or AI calls fail or overspend.
+- **Tests:** Jest 30 + Supertest. 480 unit tests (including the eval harness) and 97 e2e tests, 95.7% combined statement coverage. Mocks are typed (`jest-mock-extended`), so a fixture that drifts from the real type fails to compile.
 - **Type safety:** TypeScript `strict` plus `noUncheckedIndexedAccess` (an array or record lookup may be `undefined` until checked), with no `any`, no type assertions (`as const` aside) and no non-null `!` anywhere, tests included. ESLint enforces all three. Untrusted input (env vars, job payloads, JSON files, HTTP response bodies in e2e) is parsed with zod.
 
 ## Architecture
@@ -157,7 +157,9 @@ The app runs with just `db` and `redis` up; the rest is optional.
 | Jaeger UI | http://localhost:16686 | Distributed traces |
 | Prometheus UI | http://localhost:9090 | Raw metrics and scrape target status |
 | Grafana | http://localhost:3001 (`admin` / `admin`) | Traces, metrics and logs in one place; datasources are provisioned automatically |
+| Health check | http://localhost:3000/health | 200 or 503 with Postgres and Redis state; public, meant for an external uptime monitor |
 | Grafana LLM dashboard | http://localhost:3001/d/finwise-llm | Claude API spend, tokens and outcomes per feature, provisioned from `docker/grafana/provisioning/dashboards/`. The counters belong to the API process and reset when it restarts. |
+| Grafana alerts | http://localhost:3001/alerting/list | Five rules provisioned from `docker/grafana/provisioning/alerting/`, emailed to `ALERT_EMAIL` through Resend's SMTP relay. A stopped Postgres reaches the inbox in about a minute, and a resolved email follows. Leave `ALERT_EMAIL` empty in dev, or "API unreachable" fires whenever the API is off. |
 
 ```bash
 # Start only the observability stack (Jaeger, Prometheus, Loki, Grafana)
@@ -227,6 +229,10 @@ THROTTLE_AI_LIMIT=         # RAG and agent endpoints; default 10
 TRANSFORMERS_CACHE=        # embedding model cache, default .cache/models
 OTEL_EXPORTER_OTLP_ENDPOINT=  # default http://localhost:4318/v1/traces (Jaeger)
 LOKI_URL=                     # default http://localhost:3100
+
+# Optional, read by docker compose for the grafana service (not by the API)
+ALERT_EMAIL=               # who gets alert emails; empty keeps alerts quiet
+ALERT_FROM_EMAIL=          # sender Resend accepts, default onboarding@resend.dev
 ```
 
 ## Production Notes
@@ -237,16 +243,17 @@ LOKI_URL=                     # default http://localhost:3100
 - Set `TRUST_PROXY=1` behind the hosting proxy so rate limits see the client IP.
 - The Anthropic account is prepaid with no auto-reload, which caps the worst case regardless of the in-app limits.
 - `npm run build && npm run start:prod` runs `dist/main.js`; CI checks that the build emits it.
+- Point an external uptime monitor (UptimeRobot, Better Stack) at `/health`. Grafana's alerts run on the same host, so they can't report the host itself going down.
 
 ## Tests
 
 Two suites, kept separate because each covers a different layer. Coverage only means something when the two are combined.
 
-- **Unit** (`test:unit`): Jest, testing the `application`/`domain` layers and the eval harness in isolation, with Jest's own mocks. 440 tests.
+- **Unit** (`test:unit`): Jest, testing the `application`/`domain` layers and the eval harness in isolation, with Jest's own mocks. 480 tests.
 - **E2E** (`test:e2e`): Jest + Supertest, booting the real `AppModule` against a dedicated `finwise_test` Postgres database (with pgvector) and real Redis.
   - Mocked external boundaries: `MailService`, `StorageService`, `BillingService`, `LlmService` (the Claude API) and `EmbeddingProvider` (a deterministic fake instead of the 120 MB model).
   - Everything else runs for real: the queues and their workers, the Stripe webhook handler and signature check, pgvector search, the agent's tools over Postgres, quotas and rate limiting.
-  - 95 tests across 12 spec files.
+  - 97 tests across 13 spec files.
 
 ```bash
 npm run test:unit     # unit only
@@ -254,7 +261,7 @@ npm run test:e2e      # e2e only, real DB
 npm test              # both, with the merged coverage report
 ```
 
-`npm test` merges both coverage reports with `nyc`: unit touches `application`/`domain`, and e2e touches `infra`/`http`. Combined: 95.6% statements.
+`npm test` merges both coverage reports with `nyc`: unit touches `application`/`domain`, and e2e touches `infra`/`http`. Combined: 95.7% statements.
 
 E2E needs Docker running (`docker compose up -d`) and a local `.env.test`, with the same shape as `.env` but fake credentials, high `THROTTLE_*` limits and `BULLMQ_PREFIX=bull-test`. It is gitignored and never used for a real network call.
 
