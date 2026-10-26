@@ -123,6 +123,24 @@ describe('Grafana alerting', () => {
     }
   });
 
+  it('alerts on slow endpoints, slow AI answers and slow queries', () => {
+    const exprOf = (uid: string) =>
+      rules
+        .find((r) => r.uid === uid)
+        ?.data.flatMap((d) => d.model.expr ?? [])
+        .join('\n') ?? '';
+
+    const endpoints = exprOf('finwise-http-slow');
+    const ragAnswers = exprOf('finwise-rag-slow');
+    const queries = exprOf('finwise-db-slow');
+
+    expect(endpoints).toContain('http_server_request_duration_bucket');
+    // The RAG route waits on the model and has its own, looser rule.
+    expect(endpoints).toContain('/education/questions');
+    expect(ragAnswers).toContain('http_route="/education/questions"');
+    expect(queries).toContain('db_client_operation_duration_bucket');
+  });
+
   it('gives every rule a unique uid', () => {
     const uids = rules.map((r) => r.uid);
     expect(new Set(uids).size).toBe(uids.length);
