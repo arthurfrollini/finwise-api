@@ -88,6 +88,16 @@ services:
       - grafana_data:/var/lib/grafana
     ports:
       - '3001:3000'
+    # Alert emails go out through Resend's SMTP relay with the API's own
+    # Resend key; ALERT_EMAIL is read by provisioning/alerting/alerting.yml.
+    environment:
+      GF_SMTP_ENABLED: 'true'
+      GF_SMTP_HOST: smtp.resend.com:587
+      GF_SMTP_USER: resend
+      GF_SMTP_PASSWORD: ${RESEND_API_KEY:-}
+      GF_SMTP_FROM_ADDRESS: ${ALERT_FROM_EMAIL:-onboarding@resend.dev}
+      GF_SMTP_FROM_NAME: finwise alerts
+      ALERT_EMAIL: ${ALERT_EMAIL:-}
 
 volumes:
   postgres_data:

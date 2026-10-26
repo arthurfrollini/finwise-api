@@ -20,6 +20,7 @@ import { EducationModule } from './modules/education/education.module';
 import { AssistantModule } from './modules/assistant/assistant.module';
 import { PlanModule } from '@shared/plan/plan.module';
 import { BillingModule } from '@shared/billing/billing.module';
+import { HealthModule } from '@shared/health/health.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { BillingModule } from '@shared/billing/billing.module';
     AssistantModule,
     PlanModule,
     BillingModule,
+    HealthModule,
   ],
   controllers: [],
   providers: [
