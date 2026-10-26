@@ -1,0 +1,200 @@
+# Alerts that email whoever is on call (ALERT_EMAIL in .env) through the
+# Resend SMTP relay configured on the grafana service in docker-compose.yml.
+# Leave ALERT_EMAIL empty to keep them quiet, e.g. in local dev while the API
+# isn't running and "API unreachable" would fire.
+#
+# Timing for the dependency alert: Prometheus scrapes every 15s, the group is
+# evaluated every 30s, the rule waits 30s, and the policy waits 10s before
+# sending, so a dead Postgres reaches the inbox in roughly a minute.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: finwise-email
+    receivers:
+      - uid: finwise-email
+        type: email
+        settings:
+          addresses: $ALERT_EMAIL
+          singleEmail: true
+
+policies:
+  - orgId: 1
+    receiver: finwise-email
+    group_by: ['alertname', 'dependency']
+    group_wait: 10s
+    group_interval: 1m
+    repeat_interval: 4h
+
+groups:
+  - orgId: 1
+    name: finwise-health
+    folder: finwise
+    interval: 30s
+    rules:
+      - uid: finwise-dependency-down
+        title: Dependency down
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: min by (dependency) (finwise_dependency_up)
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+        # No data means the API itself is down, which has its own alert.
+        noDataState: OK
+        execErrState: Error
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.dependency }} is not answering the finwise API'
+          description: >-
+            The API's health check against {{ $labels.dependency }} failed or
+            took longer than 2s. GET /health shows the current state.
+
+      - uid: finwise-api-unreachable
+        title: API unreachable
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: up{job="finwise-api"}
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+        noDataState: Alerting
+        execErrState: Error
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Prometheus cannot reach the finwise API
+          description: >-
+            The /metrics endpoint stopped answering, so the process is down
+            or hung.
+
+      - uid: finwise-http-5xx
+        title: High 5xx rate
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              # Ignored below 20 requests in 5 minutes, so one failed call
+              # on a quiet night doesn't page anyone.
+              expr: >-
+                (
+                  sum(rate(http_server_request_duration_count{job="finwise-api",http_response_status_code=~"5.."}[5m]))
+                  / sum(rate(http_server_request_duration_count{job="finwise-api"}[5m]))
+                )
+                and on() sum(increase(http_server_request_duration_count{job="finwise-api"}[5m])) >= 20
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0.05] }
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'More than 5% of API requests are failing with 5xx'
+          description: >-
+            {{ with $values.A }}Current 5xx ratio: {{ humanizePercentage .Value }}. {{ end }}The
+            error logs are in Loki under app="finwise-api".
+
+  - orgId: 1
+    name: finwise-ai
+    folder: finwise
+    interval: 1m
+    rules:
+      - uid: finwise-llm-failures
+        title: AI calls failing
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 1800, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: >-
+                (
+                  sum(increase(finwise_llm_requests_total{outcome!="ok"}[15m]))
+                  / sum(increase(finwise_llm_requests_total[15m]))
+                )
+                and on() sum(increase(finwise_llm_requests_total[15m])) >= 5
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0.2] }
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'More than 20% of model calls failed in the last 15 minutes'
+          description: >-
+            {{ with $values.A }}Failure ratio: {{ humanizePercentage .Value }}. {{ end }}The
+            "finwise · LLM" dashboard breaks it down by feature and outcome.
+
+      - uid: finwise-llm-spend
+        title: AI spend over budget
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 7200, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: sum(increase(finwise_llm_cost_usd_total[1h]))
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [1] }
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: 'AI spend passed US$1 in the last hour'
+          description: >-
+            {{ with $values.A }}Spent {{ printf "%.2f" .Value }} USD in the last hour.{{ end }}
